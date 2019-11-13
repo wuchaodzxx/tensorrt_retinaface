@@ -161,12 +161,12 @@ std::vector<FaceInfo> nms(std::vector<FaceInfo> &bboxes,
   return bboxes_nms;
 }
 
-Box decodeBox(Box anchor, cv::Vec4f regress) {
+Box decodeBox(Box anchor, cv::Vec4f regress, const int w, const int h) {
   Box rect;
-  rect.x1 = anchor.x1 + regress[0] * 0.1 * anchor.x2;
-  rect.y1 = anchor.y1 + regress[1] * 0.1 * anchor.y2;
-  rect.x2 = anchor.x2 * exp(regress[2] * 0.2);
-  rect.y2 = anchor.y2 * exp(regress[3] * 0.2);
+  rect.x1 = w * (anchor.x1 + regress[0] * 0.1 * anchor.x2);
+  rect.y1 = h * (anchor.y1 + regress[1] * 0.1 * anchor.y2);
+  rect.x2 = w * (anchor.x2 * exp(regress[2] * 0.2));
+  rect.y2 = h * (anchor.y2 * exp(regress[3] * 0.2));
   rect.x1 -= (rect.x2 / 2);
   rect.y1 -= (rect.y2 / 2);
   rect.x2 += rect.x1;
@@ -174,17 +174,17 @@ Box decodeBox(Box anchor, cv::Vec4f regress) {
   return rect;
 }
 
-Landmark decodeLandmark(Box anchor, Landmark facePts) {
+Landmark decodeLandmark(Box anchor, Landmark facePts, const int w, const int h) {
   Landmark landmark;
   for (int k = 0; k < 5; ++k) {
-    landmark.x[k] = anchor.x1 + facePts.x[k] * 0.1 * anchor.x2;
-    landmark.y[k] = anchor.y1 + facePts.y[k] * 0.1 * anchor.y2;
+    landmark.x[k] = w * (anchor.x1 + facePts.x[k] * 0.1 * anchor.x2);
+    landmark.y[k] = h * (anchor.y1 + facePts.y[k] * 0.1 * anchor.y2);
   }
   return landmark;
 }
 
 vector<FaceInfo> doPostProcess(float *out_box, float *out_landmark, float *out_conf,
-    const vector<Box> &priors, float nms_threshold) {
+    const vector<Box> &priors, cosnt int w, const in h, float nms_threshold) {
   // 28672x4, 28672x2, 28672x10
   vector<FaceInfo> all_faces;
   for (int i = 0; i < priors_n; ++i) {
@@ -198,14 +198,14 @@ vector<FaceInfo> doPostProcess(float *out_box, float *out_landmark, float *out_c
       float dw = out_box[4 * i + 2];
       float dh = out_box[4 * i + 3];
       regress = cv::Vec4f(dx, dy, dw, dh);
-      Box box = decodeBox(priors[i], regress);
+      Box box = decodeBox(priors[i], regress, w, h);
 
       Landmark pts;
       for (size_t k = 0; k < 5; k++) {
         pts.x[k] = out_landmark[i * 10 + k * 2];
         pts.y[k] = out_landmark[i * 10 + k * 2 + 1];
       }
-      Landmark landmark = decodeLandmark(priors[i], pts);
+      Landmark landmark = decodeLandmark(priors[i], pts, w, h);
       FaceInfo one_face;
       one_face.box = box;
       one_face.score = conf_i;
@@ -219,7 +219,7 @@ vector<FaceInfo> doPostProcess(float *out_box, float *out_landmark, float *out_c
 }
 
 vector<FaceInfo> doInference(IExecutionContext &context, float *input, const vector<Box> &priors, int batchSize,
-                             float nms_threshold = 0.86) {
+                             const int w, const int h, float nms_threshold = 0.86) {
   const ICudaEngine &engine = context.getEngine();
   // we have 4 bindings for retinaface
   assert(engine.getNbBindings() == 4);
@@ -262,7 +262,7 @@ vector<FaceInfo> doInference(IExecutionContext &context, float *input, const vec
   // box, landmark, conf
   // 28672x4, 28672x2, 28672x10
   // out1: 4 box, out2: 2 conf, out3: 10 landmark
-  vector<FaceInfo> all_faces = doPostProcess(out1, out2, out3, priors, nms_threshold);
+  vector<FaceInfo> all_faces = doPostProcess(out1, out2, out3, priors, w, h, nms_threshold);
   return all_faces;
 }
 
@@ -362,14 +362,14 @@ int run(int argc, char **argv) {
     cv::resize(frame, resizedImage, cv::Size(INPUT_W, INPUT_H));
     data = HWC2CHW(resizedImage, kMeans);
 
-    vector<FaceInfo> all_faces = doInference(*context, data, priors, 1);
+    vector<FaceInfo> all_faces = doInference(*context, data, priors, 1, ori_w, ori_h);
 
     for (size_t i = 0; i < all_faces.size(); i++) {
       FaceInfo one_face = all_faces[i];
-      int x1 = (int) (one_face.box.x1 * ori_w);
-      int y1 = (int) (one_face.box.y1 * ori_h);
-      int x2 = (int) (one_face.box.x2 * ori_w);
-      int y2 = (int) (one_face.box.y2 * ori_h);
+      int x1 = (int) (one_face.box.x1);
+      int y1 = (int) (one_face.box.y1);
+      int x2 = (int) (one_face.box.x2);
+      int y2 = (int) (one_face.box.y2);
       float conf = one_face.score;
       if (conf > 0.5) {
         char conf_str[128];
@@ -378,8 +378,8 @@ int run(int argc, char **argv) {
                     cv::Scalar(255, 0, 225));
         cv::rectangle(frame, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(255, 0, 255));
         for (size_t j = 0; j < 5; j++) {
-          cv::Point2f pt = cv::Point2f(one_face.landmark.x[j] * ori_w,
-                                       one_face.landmark.y[j] * ori_h);
+          cv::Point2f pt = cv::Point2f(one_face.landmark.x[j],
+                                       one_face.landmark.y[j]);
           cv::circle(frame, pt, 1, cv::Scalar(0, 255, 0), 2);
         }
       }
